@@ -223,11 +223,23 @@ def ensure_console_web_search(
 
 
 def normalize_console_tool_choice(tool_choice: Any) -> Any:
-    # The console upstream currently rejects several otherwise valid OpenAI
-    # Responses tool_choice values ("none", "required", and forced function
-    # choices) with HTTP 400. Do not forward tool_choice; leaving it absent is
-    # equivalent to the upstream default auto behavior and is safest for Codex.
-    _ = tool_choice
+    # Matrix-tested against console /v1/responses:
+    #   - "auto" and "none" are accepted.
+    #   - forced function choices shaped as {"type":"function","name":...}
+    #     are accepted when the referenced function tool is present.
+    # Keep only known OpenAI Responses-compatible shapes; omit unknown values
+    # rather than poisoning the upstream request.
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        value = tool_choice.strip()
+        if value in {"auto", "none", "required"}:
+            return value
+        return None
+    if isinstance(tool_choice, dict):
+        choice_type = str(tool_choice.get("type") or "").strip()
+        if choice_type == "function" and tool_choice.get("name"):
+            return {"type": "function", "name": str(tool_choice["name"])}
     return None
 
 
@@ -451,14 +463,11 @@ def build_console_responses_payload(
             tool for tool in normalized_tools
             if str(tool.get("type") or "").strip() in _SEARCH_TOOL_TYPES
         ] or [{"type": "web_search"}]
-    # Do not reduce Codex's normal function-tool set.  The earlier blank 400s
-    # were reproduced without needing to blame the function tools themselves;
-    # they were resolved by request-shape normalization (large instructions,
-    # raw environment_context, reasoning.effort, tool_choice, and passthrough
-    # OpenAI-only fields).  Non-function/namespace tools are already filtered in
-    # _normalize_console_tool because console /v1/responses does not accept that
-    # schema, but valid function tools should be preserved so Codex can inspect
-    # and edit the local project.
+    # Do not reduce Codex's normal function-tool set. Matrix testing showed the
+    # full function-tool bundle is accepted. Non-function/namespace tools are
+    # filtered in _normalize_console_tool because console /v1/responses rejects
+    # that schema with 422, but valid function tools must be preserved so Codex
+    # can inspect and edit the local project.
 
     normalized_input = normalize_console_input(filtered_input_value)
     for msg in normalized_input:
@@ -577,11 +586,20 @@ def build_console_responses_payload(
         payload["max_output_tokens"] = max_output_tokens
     # max_output_tokens <= 0 is accepted by some clients as "unspecified", but
     # console upstream rejects it with HTTP 400.
-    # The public OpenAI-compatible endpoint accepts these fields, but the
-    # console upstream currently rejects several of them (metadata is rejected
-    # even when it is an empty object).  Keep them as API-compatible no-ops so
-    # Codex/OpenAI SDK callers do not poison the upstream payload.
-    _ = (metadata, user, store, previous_response_id, truncation)
+    #
+    # Matrix-tested passthrough behavior:
+    #   - metadata={} rejects with blank HTTP 400, so keep metadata as a no-op.
+    #   - previous_response_id rejects with 404 when the ID is not upstream-
+    #     valid; this proxy does not maintain upstream response storage mapping,
+    #     so keep it as a compatibility no-op.
+    #   - store, user, and truncation are accepted by console upstream.
+    _ = (metadata, previous_response_id)
+    if store is not None:
+        payload["store"] = store
+    if user is not None:
+        payload["user"] = user
+    if truncation is not None:
+        payload["truncation"] = truncation
     return payload
 
 
