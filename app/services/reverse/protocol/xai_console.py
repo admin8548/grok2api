@@ -15,10 +15,6 @@ _URL_RE = re.compile(r'https?://[^\s<>()"\']+')
 _SEARCH_TOOL_TYPES = {"web_search", "web_search_2025_08_26"}
 _MESSAGE_TEXT_TYPES = {"text", "input_text", "output_text"}
 _MESSAGE_IMAGE_TYPES = {"image", "image_url", "input_image", "output_image"}
-_CODEX_LOCAL_TOOL_NAMES = {
-    "exec_command",
-    "write_stdin",
-}
 _XML_TAG_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 
@@ -449,33 +445,20 @@ def build_console_responses_payload(
     filtered_input_value = input_value
 
     normalized_tools = ensure_console_web_search(tools)
-    function_tool_count = sum(
-        1 for tool in normalized_tools
-        if str(tool.get("type") or "").strip() == "function"
-    )
     if "multi-agent" in (console_model or ""):
         # console responses rejects grok-4.20-multi-agent function tools.
         normalized_tools = [
             tool for tool in normalized_tools
             if str(tool.get("type") or "").strip() in _SEARCH_TOOL_TYPES
         ] or [{"type": "web_search"}]
-    elif function_tool_count >= 5:
-        # Real Codex sends a large local-tool bundle plus namespace-only tools.
-        # Forwarding every tool can make console return a blank HTTP 400; but
-        # dropping all functions makes Codex unable to inspect the workspace.
-        # Keep the minimal local project-inspection/execution tools that console
-        # accepts and that Codex can execute client-side.
-        reduced_tools = []
-        for tool in normalized_tools:
-            tool_type = str(tool.get("type") or "").strip()
-            if tool_type in _SEARCH_TOOL_TYPES:
-                reduced_tools.append(tool)
-            elif (
-                tool_type == "function"
-                and str(tool.get("name") or "") in _CODEX_LOCAL_TOOL_NAMES
-            ):
-                reduced_tools.append(tool)
-        normalized_tools = reduced_tools or [{"type": "web_search"}]
+    # Do not reduce Codex's normal function-tool set.  The earlier blank 400s
+    # were reproduced without needing to blame the function tools themselves;
+    # they were resolved by request-shape normalization (large instructions,
+    # raw environment_context, reasoning.effort, tool_choice, and passthrough
+    # OpenAI-only fields).  Non-function/namespace tools are already filtered in
+    # _normalize_console_tool because console /v1/responses does not accept that
+    # schema, but valid function tools should be preserved so Codex can inspect
+    # and edit the local project.
 
     normalized_input = normalize_console_input(filtered_input_value)
     for msg in normalized_input:
