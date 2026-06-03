@@ -20,6 +20,7 @@ from app.core.exceptions import (
     StreamIdleTimeoutError,
 )
 from app.services.grok.services.model import ModelService
+from app.services.grok.services.console import ConsoleService
 from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils import process as proc_base
 from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
@@ -392,6 +393,20 @@ class ChatService:
         parallel_tool_calls: bool = True,
     ):
         """Chat Completions 入口"""
+        model_info = ModelService.get(model)
+        if model_info and model_info.is_console():
+            return await ConsoleService.chat_completions(
+                model=model,
+                messages=messages,
+                stream=bool(stream if stream is not None else get_config("app.stream")),
+                reasoning_effort=reasoning_effort,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+            )
+
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()

@@ -2,7 +2,7 @@
   const modelChip = document.getElementById('modelChip');
   const modelLabel = document.getElementById('modelLabel');
   const modelDropdown = document.getElementById('modelDropdown');
-  let modelValue = 'grok-4.20-beta';
+  let modelValue = 'grok-4.3';
   let modelList = [];
   const tempRange = document.getElementById('tempRange');
   const tempValue = document.getElementById('tempValue');
@@ -1333,10 +1333,10 @@
 
   async function loadModels() {
     if (!modelDropdown) return;
-    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta', 'grok-imagine-1.0-fast'];
-    const preferred = 'grok-4.20-beta';
+    const fallback = ['grok-4.3', 'grok-4', 'grok-4.20', 'grok-4.20-reasoning', 'grok-4.20-non-reasoning', 'grok-4.20-multi-agent', 'grok-4.1-fast', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta', 'grok-imagine-1.0-fast'];
+    const preferred = 'grok-4.3';
     try {
-      const res = await fetch('/v1/models', { cache: 'no-store' });
+      const res = await fetch('/webui/api/models', { cache: 'no-store' });
       if (!res.ok) throw new Error('models fetch failed');
       const data = await res.json();
       const items = Array.isArray(data && data.data) ? data.data : [];

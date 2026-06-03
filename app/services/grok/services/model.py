@@ -29,6 +29,7 @@ class ModelInfo(BaseModel):
     model_id: str
     grok_model: str
     model_mode: str
+    console_model: str = ""
     tier: Tier = Field(default=Tier.BASIC)
     cost: Cost = Field(default=Cost.LOW)
     display_name: str
@@ -36,6 +37,9 @@ class ModelInfo(BaseModel):
     is_image: bool = False
     is_image_edit: bool = False
     is_video: bool = False
+
+    def is_console(self) -> bool:
+        return bool((self.console_model or "").strip())
 
 
 class ModelService:
@@ -78,10 +82,23 @@ class ModelService:
         ModelInfo(
             model_id="grok-4",
             grok_model="grok-4",
-            model_mode="MODEL_MODE_GROK_4",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4",
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-4",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.3",
+            grok_model="grok-4.3",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4.3",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="GROK-4.3",
             is_image=False,
             is_image_edit=False,
             is_video=False,
@@ -170,6 +187,54 @@ class ModelService:
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-4.20-BETA",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20",
+            grok_model="grok-4.20",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4.20",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="GROK-4.20",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-reasoning",
+            grok_model="grok-4.20-reasoning",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4.20-reasoning",
+            tier=Tier.BASIC,
+            cost=Cost.HIGH,
+            display_name="GROK-4.20-REASONING",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-non-reasoning",
+            grok_model="grok-4.20-non-reasoning",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4.20-non-reasoning",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="GROK-4.20-NON-REASONING",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-multi-agent",
+            grok_model="grok-4.20-multi-agent",
+            model_mode="CONSOLE_RESPONSES",
+            console_model="grok-4.20-multi-agent",
+            tier=Tier.BASIC,
+            cost=Cost.HIGH,
+            display_name="GROK-4.20-MULTI-AGENT",
             is_image=False,
             is_image_edit=False,
             is_video=False,
@@ -267,4 +332,4 @@ class ModelService:
         return ["ssoBasic", "ssoSuper"]
 
 
-__all__ = ["ModelService"]
+__all__ = ["ModelService", "ModelInfo", "Tier", "Cost"]

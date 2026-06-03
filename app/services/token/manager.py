@@ -644,7 +644,7 @@ class TokenManager:
         """
         将 Token 标记为配额耗尽（COOLING）
 
-        当 Grok API 返回 429 时调用，将 quota 设为 0 并标记 COOLING，
+        当 Grok / console API 返回 402/429 时调用，将 quota 设为 0 并标记 COOLING，
         使该 Token 不再被选中，等待下次 Scheduler 刷新恢复。
 
         Args:

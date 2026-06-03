@@ -40,7 +40,7 @@ def rate_limited(error: Exception) -> bool:
         return False
     status = error.details.get("status") if error.details else None
     code = error.details.get("error_code") if error.details else None
-    return status == 429 or code == "rate_limit_exceeded"
+    return status in {402, 429} or code in {"rate_limit_exceeded", "payment_required"}
 
 
 def transient_upstream(error: Exception) -> bool:

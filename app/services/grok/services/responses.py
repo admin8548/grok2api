@@ -9,6 +9,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import orjson
 
 from app.services.grok.services.chat import ChatService
+from app.services.grok.services.console import ConsoleService
+from app.services.grok.services.model import ModelService
 from app.services.grok.utils import process as proc_base
 
 
@@ -685,6 +687,27 @@ class ResponsesService:
         previous_response_id: Optional[str] = None,
         truncation: Optional[str] = None,
     ) -> Any:
+        model_info = ModelService.get(model)
+        if model_info and model_info.is_console():
+            return await ConsoleService.responses(
+                model=model,
+                input_value=input_value,
+                instructions=instructions,
+                stream=stream,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                reasoning_effort=reasoning_effort,
+                max_output_tokens=max_output_tokens,
+                metadata=metadata,
+                user=user,
+                store=store,
+                previous_response_id=previous_response_id,
+                truncation=truncation,
+            )
+
         messages = _coerce_input_to_messages(input_value)
         if instructions:
             messages = [{"role": "system", "content": instructions}] + messages
