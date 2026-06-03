@@ -15,6 +15,11 @@ _URL_RE = re.compile(r'https?://[^\s<>()"\']+')
 _SEARCH_TOOL_TYPES = {"web_search", "web_search_2025_08_26"}
 _MESSAGE_TEXT_TYPES = {"text", "input_text", "output_text"}
 _MESSAGE_IMAGE_TYPES = {"image", "image_url", "input_image", "output_image"}
+_CODEX_LOCAL_TOOL_NAMES = {
+    "exec_command",
+    "write_stdin",
+}
+_XML_TAG_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 
 def _now_ts() -> int:
@@ -45,6 +50,20 @@ def _extract_urls(text: str) -> list[str]:
     if not isinstance(text, str) or not text:
         return []
     return [match.group(0).rstrip('.,);]') for match in _URL_RE.finditer(text)]
+
+
+def _extract_xml_tag(text: str, tag: str) -> str | None:
+    if not isinstance(text, str) or not text:
+        return None
+    pattern = _XML_TAG_RE_CACHE.get(tag)
+    if pattern is None:
+        pattern = re.compile(rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", re.S)
+        _XML_TAG_RE_CACHE[tag] = pattern
+    match = pattern.search(text)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value or None
 
 
 def _content_text(content: Any) -> str:
@@ -434,16 +453,29 @@ def build_console_responses_payload(
         1 for tool in normalized_tools
         if str(tool.get("type") or "").strip() == "function"
     )
-    if "multi-agent" in (console_model or "") or function_tool_count >= 5:
-        # console responses rejects grok-4.20-multi-agent function tools, and
-        # also rejects Codex's large built-in tool set on reasoning models with
-        # HTTP 400. Keep only web_search so Codex sessions complete instead of
-        # reconnecting forever. Small custom function-tool requests are still
-        # allowed for non-multi-agent console models.
+    if "multi-agent" in (console_model or ""):
+        # console responses rejects grok-4.20-multi-agent function tools.
         normalized_tools = [
             tool for tool in normalized_tools
             if str(tool.get("type") or "").strip() in _SEARCH_TOOL_TYPES
         ] or [{"type": "web_search"}]
+    elif function_tool_count >= 5:
+        # Real Codex sends a large local-tool bundle plus namespace-only tools.
+        # Forwarding every tool can make console return a blank HTTP 400; but
+        # dropping all functions makes Codex unable to inspect the workspace.
+        # Keep the minimal local project-inspection/execution tools that console
+        # accepts and that Codex can execute client-side.
+        reduced_tools = []
+        for tool in normalized_tools:
+            tool_type = str(tool.get("type") or "").strip()
+            if tool_type in _SEARCH_TOOL_TYPES:
+                reduced_tools.append(tool)
+            elif (
+                tool_type == "function"
+                and str(tool.get("name") or "") in _CODEX_LOCAL_TOOL_NAMES
+            ):
+                reduced_tools.append(tool)
+        normalized_tools = reduced_tools or [{"type": "web_search"}]
 
     normalized_input = normalize_console_input(filtered_input_value)
     for msg in normalized_input:
@@ -467,15 +499,27 @@ def build_console_responses_payload(
 
     # Codex injects an XML-like <environment_context> block as a user message.
     # The console upstream can reject that exact block with HTTP 400. It is local
-    # execution metadata, not the user's actual prompt, so omit it upstream.
-    normalized_input = [
-        msg for msg in normalized_input
-        if not (
+    # execution metadata, not the user's actual prompt, so do not forward the
+    # raw XML. Keep a short cwd hint so the model knows local tools can inspect
+    # the current project.
+    env_hint: str | None = None
+    filtered_input = []
+    for msg in normalized_input:
+        text = _content_text(msg.get("content")) if isinstance(msg, dict) else ""
+        if (
             isinstance(msg, dict)
             and str(msg.get("role") or "").strip() == "user"
-            and _content_text(msg.get("content")).lstrip().startswith("<environment_context>")
-        )
-    ]
+            and text.lstrip().startswith("<environment_context>")
+        ):
+            cwd = _extract_xml_tag(text, "cwd")
+            if cwd:
+                env_hint = (
+                    f"Current working directory: {cwd}. "
+                    "Use local tools such as exec_command to inspect project files when needed."
+                )
+            continue
+        filtered_input.append(msg)
+    normalized_input = filtered_input
 
     system_text_len = sum(
         len(_content_text(msg.get("content")))
@@ -500,12 +544,29 @@ def build_console_responses_payload(
                     {
                         "type": "input_text",
                         "text": (
-                            "You are a helpful coding assistant. Answer the user's latest "
-                            "request directly and concisely. Preserve the user's language. "
-                            "If tool calls are unavailable, provide the best text answer."
+                            "You are a helpful coding assistant running inside Codex. "
+                            "Use available local tools to inspect or modify the workspace "
+                            "when the user asks about project files. After tool results give "
+                            "enough information, produce a final assistant message that "
+                            "directly answers the user. Preserve the user's language."
                         ),
                     }
                 ],
+            },
+        )
+
+    if env_hint:
+        insert_at = 1 if (
+            normalized_input
+            and isinstance(normalized_input[0], dict)
+            and str(normalized_input[0].get("role") or "").strip() == "system"
+        ) else 0
+        normalized_input.insert(
+            insert_at,
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": env_hint}],
             },
         )
 
