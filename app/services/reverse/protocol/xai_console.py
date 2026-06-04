@@ -462,6 +462,34 @@ def _truncate_large_tool_payloads(items: list[dict[str, Any]]) -> list[dict[str,
     return out if changed else items
 
 
+def _is_codex_progress_chatter(item: dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") != "message" or str(item.get("role") or "").strip() != "assistant":
+        return False
+    text = _content_text(item.get("content"))
+    if not text:
+        return False
+    # These assistant-only status/apology/progress messages are common after a
+    # Codex no-write loop. Keeping many of them in compacted history reinforces
+    # the loop; the verifiable function_call/function_call_output items and the
+    # worktree are better evidence.
+    markers = (
+        "没有真正修改", "没有实际修改", "没有任何修改", "重复输出", "循环重复",
+        "不再重复", "不再循环", "真正开始", "直接执行实质", "正在写入",
+        "真正修改", "已实际修改", "我刚刚使用工具", "已写入项目文件",
+        "阶段 1 已完成", "阶段1已完成", "阶段 2 已完成", "阶段2已完成",
+        "已完成的具体修改", "已完成的具体工作", "当前完成情况", "下一步计划",
+        "真实情况总结", "真实状态汇报", "进度汇报", "主要变更",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    stripped = text.lstrip()
+    if stripped.startswith("**✅") and any(word in text for word in ("完成", "修改", "进度", "真实", "收到")):
+        return True
+    return False
+
+
 def _compact_oversized_console_input(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Console upstream accepts normal Codex function histories, but very long
     # accumulated /v1/responses histories (hundreds of items / ~MB JSON) can stall
@@ -472,7 +500,8 @@ def _compact_oversized_console_input(items: list[dict[str, Any]]) -> list[dict[s
     max_text_chars = 420_000
     min_tail_items = 60
     total_chars = sum(_input_item_text_len(item) for item in items)
-    if len(items) <= max_items and total_chars <= max_text_chars:
+    progress_chatter_count = sum(1 for item in items if _is_codex_progress_chatter(item))
+    if len(items) <= max_items and total_chars <= max_text_chars and progress_chatter_count <= 8:
         return items
 
     system_items = [
@@ -489,6 +518,10 @@ def _compact_oversized_console_input(items: list[dict[str, Any]]) -> list[dict[s
     # Avoid starting the retained tail with an orphaned tool/function output.
     while tail and isinstance(tail[0], dict) and tail[0].get("type") == "function_call_output":
         tail = tail[1:]
+    # In oversized Codex histories, assistant-only progress/apology chatter can
+    # dominate the recent tail and cause the model to keep narrating instead of
+    # issuing tool calls. Preserve user messages and tool evidence; drop chatter.
+    tail = [item for item in tail if not _is_codex_progress_chatter(item)]
 
     def _tail_total() -> int:
         return sum(_input_item_text_len(item) for item in system_items) + sum(
@@ -508,6 +541,61 @@ def _compact_oversized_console_input(items: list[dict[str, Any]]) -> list[dict[s
         "Use the current worktree, files, and tool inspection as authoritative for older state."
     )
     return system_items + [notice] + tail
+
+
+def _latest_user_text(items: list[dict[str, Any]]) -> str:
+    for item in reversed(items or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message" and str(item.get("role") or "").strip() == "user":
+            text = _content_text(item.get("content")).strip()
+            if text:
+                return text
+    return ""
+
+
+def _has_function_tool(tools: list[dict[str, Any]], name: str) -> bool:
+    return any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == name
+        for tool in tools or []
+    )
+
+
+def _force_exec_for_codex_edit_intent(
+    items: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: Any,
+) -> dict[str, str] | None:
+    # Codex edit/status turns should generally start with local inspection or a
+    # write command. If a polluted history nudges the model toward status prose,
+    # force the first step back through exec_command.
+    if tool_choice not in (None, "auto"):
+        return None
+    if not _has_function_tool(tools, "exec_command"):
+        return None
+    latest_user_index = -1
+    for idx, item in enumerate(items or []):
+        if isinstance(item, dict) and item.get("type") == "message" and str(item.get("role") or "").strip() == "user":
+            if _content_text(item.get("content")).strip():
+                latest_user_index = idx
+    if latest_user_index >= 0:
+        for item in items[latest_user_index + 1:]:
+            if isinstance(item, dict) and item.get("type") == "function_call_output":
+                return None
+
+    text = _latest_user_text(items).lower()
+    if not text:
+        return None
+    keywords = (
+        "开始", "继续", "编码", "修改", "写入", "改文件", "实际写", "完成了吗",
+        "验证", "检查", "确认", "修复", "执行", "落地", "下一步",
+        "start", "continue", "code", "edit", "modify", "write", "verify", "check", "fix",
+    )
+    if any(keyword in text for keyword in keywords):
+        return {"type": "function", "name": "exec_command"}
+    return None
 
 
 def build_console_chat_payload(
@@ -538,7 +626,10 @@ def build_console_chat_payload(
     if parallel_tool_calls is not None:
         payload["parallel_tool_calls"] = parallel_tool_calls
     normalized_tool_choice = normalize_console_tool_choice(tool_choice)
-    if normalized_tool_choice is not None:
+    forced_tool_choice = _force_exec_for_codex_edit_intent(normalized_input, normalized_tools, normalized_tool_choice)
+    if forced_tool_choice is not None:
+        payload["tool_choice"] = forced_tool_choice
+    elif normalized_tool_choice is not None:
         payload["tool_choice"] = normalized_tool_choice
     if reasoning_effort is not None:
         payload["reasoning"] = {"effort": reasoning_effort}
@@ -682,7 +773,10 @@ def build_console_responses_payload(
                             "logs, analysis, or a plan. Never end the task with only tool "
                             "calls or command output; after verification, produce a final "
                             "assistant message that summarizes the actual file changes and "
-                            "verification result. Preserve the user's language."
+                            "verification result. If the latest user asks to start, continue, "
+                            "or begin coding, do not answer with only promises, apologies, or "
+                            "progress text; make a tool call first unless the user only asked "
+                            "for status verification. Preserve the user's language."
                         ),
                     }
                 ],
@@ -727,7 +821,10 @@ def build_console_responses_payload(
     if parallel_tool_calls is not None:
         payload["parallel_tool_calls"] = parallel_tool_calls
     normalized_tool_choice = normalize_console_tool_choice(tool_choice)
-    if normalized_tool_choice is not None:
+    forced_tool_choice = _force_exec_for_codex_edit_intent(normalized_input, normalized_tools, normalized_tool_choice)
+    if forced_tool_choice is not None:
+        payload["tool_choice"] = forced_tool_choice
+    elif normalized_tool_choice is not None:
         payload["tool_choice"] = normalized_tool_choice
     # The public OpenAI-compatible endpoint accepts reasoning.effort, but
     # console /v1/responses currently rejects it with HTTP 400 for
