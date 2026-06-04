@@ -537,10 +537,15 @@ def build_console_responses_payload(
                         "type": "input_text",
                         "text": (
                             "You are a helpful coding assistant running inside Codex. "
-                            "Use available local tools to inspect or modify the workspace "
-                            "when the user asks about project files. After tool results give "
-                            "enough information, produce a final assistant message that "
-                            "directly answers the user. Preserve the user's language."
+                            "Use available local tools to inspect, edit, and verify files "
+                            "in the workspace. When the user asks for a code or file change, "
+                            "actually modify the files with tool calls (for example shell "
+                            "redirection, sed, or a small script), then verify with commands "
+                            "such as cat, tests, or git diff. Do not stop after only printing "
+                            "logs, analysis, or a plan. Never end the task with only tool "
+                            "calls or command output; after verification, produce a final "
+                            "assistant message that summarizes the actual file changes and "
+                            "verification result. Preserve the user's language."
                         ),
                     }
                 ],
