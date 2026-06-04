@@ -446,11 +446,12 @@ class ConsoleService:
                 details = exc.details or {}
                 status = details.get("status")
                 body = str(details.get("body") or "").strip()
-                if status == 400 and not body:
+                if status in {400, 500, 502, 503, 504} and not body:
                     if not await ConsoleService._pick_alternative_available(token_mgr, model, tried_tokens):
                         raise
                     logger.warning(
-                        "Blank console 400 for token %s, trying next token (%s/%s)",
+                        "Blank console %s for token %s, trying next token (%s/%s)",
+                        status,
                         ConsoleService._token_hash(token),
                         attempt + 1,
                         max_token_retries,

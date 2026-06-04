@@ -394,6 +394,122 @@ def normalize_console_input(input_value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _system_input_message(text: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "role": "system",
+        "content": [{"type": "input_text", "text": text}],
+    }
+
+
+def _leading_system_insert_index(items: list[dict[str, Any]]) -> int:
+    idx = 0
+    while idx < len(items):
+        item = items[idx]
+        if not isinstance(item, dict) or str(item.get("role") or "").strip() != "system":
+            break
+        idx += 1
+    return idx
+
+
+def _input_item_text_len(item: dict[str, Any]) -> int:
+    if not isinstance(item, dict):
+        return len(str(item))
+    total = 0
+    if item.get("content") is not None:
+        total += len(_content_text(item.get("content")))
+    if item.get("output") is not None:
+        total += len(str(item.get("output") or ""))
+    if item.get("arguments") is not None:
+        total += len(str(item.get("arguments") or ""))
+    return total
+
+
+def _truncate_middle(text: str, limit: int) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    if len(text) <= limit:
+        return text
+    marker = f"\n...[truncated {len(text) - limit} chars by compatibility layer]...\n"
+    head_len = max(0, int(limit * 0.65))
+    tail_len = max(0, limit - head_len - len(marker))
+    return text[:head_len] + marker + (text[-tail_len:] if tail_len else "")
+
+
+def _truncate_large_tool_payloads(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Large shell outputs/arguments from old Codex turns can push console responses
+    # into blank 500s. Keep head+tail context but cap any single old item.
+    changed = False
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        new_item = item
+        if item.get("type") == "function_call_output":
+            output = str(item.get("output") or "")
+            if len(output) > 20000:
+                new_item = deepcopy(item)
+                new_item["output"] = _truncate_middle(output, 20000)
+                changed = True
+        elif item.get("type") == "function_call":
+            arguments = str(item.get("arguments") or "")
+            if len(arguments) > 20000:
+                new_item = deepcopy(item)
+                new_item["arguments"] = _truncate_middle(arguments, 20000)
+                changed = True
+        out.append(new_item)
+    return out if changed else items
+
+
+def _compact_oversized_console_input(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Console upstream accepts normal Codex function histories, but very long
+    # accumulated /v1/responses histories (hundreds of items / ~MB JSON) can stall
+    # then return blank 500s. Preserve compact system context and the recent tail;
+    # local tools/worktree remain the source of truth for older execution state.
+    items = _truncate_large_tool_payloads(items)
+    max_items = 180
+    max_text_chars = 420_000
+    min_tail_items = 60
+    total_chars = sum(_input_item_text_len(item) for item in items)
+    if len(items) <= max_items and total_chars <= max_text_chars:
+        return items
+
+    system_items = [
+        item for item in items
+        if isinstance(item, dict) and str(item.get("role") or "").strip() == "system"
+    ]
+    non_system = [
+        item for item in items
+        if not (isinstance(item, dict) and str(item.get("role") or "").strip() == "system")
+    ]
+
+    tail_budget = max(min_tail_items, max_items - len(system_items) - 1)
+    tail = non_system[-tail_budget:]
+    # Avoid starting the retained tail with an orphaned tool/function output.
+    while tail and isinstance(tail[0], dict) and tail[0].get("type") == "function_call_output":
+        tail = tail[1:]
+
+    def _tail_total() -> int:
+        return sum(_input_item_text_len(item) for item in system_items) + sum(
+            _input_item_text_len(item) for item in tail
+        )
+
+    while len(tail) > min_tail_items and _tail_total() > max_text_chars:
+        tail = tail[1:]
+        while tail and isinstance(tail[0], dict) and tail[0].get("type") == "function_call_output":
+            tail = tail[1:]
+
+    omitted = max(0, len(non_system) - len(tail))
+    omitted_chars = max(0, total_chars - _tail_total())
+    notice = _system_input_message(
+        "Compatibility note: older Codex conversation/tool history was compacted "
+        f"before forwarding upstream (omitted {omitted} items, about {omitted_chars} chars). "
+        "Use the current worktree, files, and tool inspection as authoritative for older state."
+    )
+    return system_items + [notice] + tail
+
+
 def build_console_chat_payload(
     *,
     console_model: str,
@@ -495,13 +611,17 @@ def build_console_responses_payload(
     # raw XML. Keep a short cwd hint so the model knows local tools can inspect
     # the current project.
     env_hint: str | None = None
+    codex_goal_hint: str | None = None
+    codex_internal_omitted = 0
+    turn_abort_seen = False
     filtered_input = []
     for msg in normalized_input:
         text = _content_text(msg.get("content")) if isinstance(msg, dict) else ""
+        stripped_text = text.lstrip()
         if (
             isinstance(msg, dict)
             and str(msg.get("role") or "").strip() == "user"
-            and text.lstrip().startswith("<environment_context>")
+            and stripped_text.startswith("<environment_context>")
         ):
             cwd = _extract_xml_tag(text, "cwd")
             if cwd:
@@ -509,6 +629,23 @@ def build_console_responses_payload(
                     f"Current working directory: {cwd}. "
                     "Use local tools such as exec_command to inspect project files when needed."
                 )
+            continue
+        if (
+            isinstance(msg, dict)
+            and str(msg.get("role") or "").strip() == "user"
+            and stripped_text.startswith("<codex_internal_context")
+        ):
+            objective = _extract_xml_tag(text, "objective")
+            if objective:
+                codex_goal_hint = _truncate_middle(objective.strip(), 1000)
+            codex_internal_omitted += 1
+            continue
+        if (
+            isinstance(msg, dict)
+            and str(msg.get("role") or "").strip() == "user"
+            and stripped_text.startswith("<turn_aborted>")
+        ):
+            turn_abort_seen = True
             continue
         filtered_input.append(msg)
     normalized_input = filtered_input
@@ -553,19 +690,29 @@ def build_console_responses_payload(
         )
 
     if env_hint:
-        insert_at = 1 if (
-            normalized_input
-            and isinstance(normalized_input[0], dict)
-            and str(normalized_input[0].get("role") or "").strip() == "system"
-        ) else 0
+        normalized_input.insert(_leading_system_insert_index(normalized_input), _system_input_message(env_hint))
+
+    if codex_goal_hint:
         normalized_input.insert(
-            insert_at,
-            {
-                "type": "message",
-                "role": "system",
-                "content": [{"type": "input_text", "text": env_hint}],
-            },
+            _leading_system_insert_index(normalized_input),
+            _system_input_message(
+                "Codex internal goal-continuation context was compacted. "
+                f"Latest active goal objective: {codex_goal_hint}"
+            ),
         )
+    elif codex_internal_omitted:
+        normalized_input.insert(
+            _leading_system_insert_index(normalized_input),
+            _system_input_message("Codex internal goal-continuation context was omitted from upstream payload."),
+        )
+
+    if turn_abort_seen:
+        normalized_input.insert(
+            _leading_system_insert_index(normalized_input),
+            _system_input_message("The previous Codex turn was interrupted by the user; inspect current files/tool state before continuing."),
+        )
+
+    normalized_input = _compact_oversized_console_input(normalized_input)
 
     payload: dict[str, Any] = {
         "model": console_model,
