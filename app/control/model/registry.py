@@ -2,6 +2,7 @@
 
 from .enums import Capability, ModeId, Tier
 from .spec import ModelSpec
+from .console_free import CONSOLE_FREE_MODELS
 
 # ---------------------------------------------------------------------------
 # Master model list.
@@ -35,6 +36,22 @@ MODELS: tuple[ModelSpec, ...] = (
     # === grok-4.3 (grok-420-computer-use-sa) ==================================
     # Super+（basic 池不支持此模式）
     ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       True, "Grok 4.3 Beta"),
+
+    # === Free console.x.ai aliases ===========================================
+    # Routed by app.products.openai.console_free.  They are registered as
+    # BASIC/FAST for v2 account selection so existing basic accounts from
+    # accounts.db can be reserved before the request is sent to console.x.ai.
+    *(
+        ModelSpec(
+            item.public_model,
+            ModeId.FAST,
+            Tier.BASIC,
+            Capability.CHAT,
+            True,
+            item.display_name,
+        )
+        for item in CONSOLE_FREE_MODELS
+    ),
 
     # === Image ==============================================================
 

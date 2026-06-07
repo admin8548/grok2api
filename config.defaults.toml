@@ -132,6 +132,19 @@ max_inflight = 8
 timeout = 60
 
 
+# ==================== Free Console 模型 ====================
+[console_free]
+# 是否启用 console.x.ai free 模型别名分流
+enabled = true
+# 单 token 本地窗口内请求上限，避免某个账号被连续打满
+rate_limit_count = 30
+rate_limit_window_sec = 900
+# 一次请求最多尝试多少个账号
+max_retry_tokens = 20
+# 未指定 reasoning_effort 时的默认强度
+default_effort = "medium"
+
+
 # ==================== 图像配置 ====================
 [image]
 timeout = 60

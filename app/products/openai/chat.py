@@ -452,10 +452,13 @@ async def completions(
     messages: list[dict],
     stream: bool | None = None,
     emit_think: bool | None = None,
+    reasoning_effort: str | None = None,
     tools: list[dict] | None = None,
     tool_choice: Any = None,
+    parallel_tool_calls: bool | None = None,
     temperature: float = 0.8,
     top_p: float = 0.95,
+    max_tokens: int | None = None,
     request_overrides: dict | None = None,
 ) -> dict | AsyncGenerator[str, None]:
     """Entry point for /v1/chat/completions.
@@ -467,6 +470,26 @@ async def completions(
     cfg = get_config()
     spec = resolve_model(model)
     is_stream = stream if stream is not None else cfg.get_bool("features.stream", True)
+
+    from .console_free import (
+        chat_completions as console_chat_completions,
+        is_console_free_model,
+    )
+
+    if is_console_free_model(model):
+        return await console_chat_completions(
+            model=model,
+            messages=messages,
+            stream=is_stream,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            max_tokens=max_tokens,
+        )
+
     if emit_think is None:
         emit_think = cfg.get_bool("features.thinking", True)
 

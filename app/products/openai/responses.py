@@ -217,11 +217,44 @@ async def create(
     top_p:        float,
     tools:        list[dict] | None = None,
     tool_choice:  Any = None,
+    parallel_tool_calls: bool | None = None,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    user: str | None = None,
+    store: bool | None = None,
+    previous_response_id: str | None = None,
+    truncation: str | None = None,
 ) -> dict | AsyncGenerator[str, None]:
 
     cfg     = get_config()
     spec    = resolve_model(model)
     mode_id = int(spec.mode_id)   # cast once, reuse everywhere
+
+    from .console_free import (
+        is_console_free_model,
+        responses as console_responses,
+    )
+
+    if is_console_free_model(model):
+        return await console_responses(
+            model=model,
+            input_value=input_val,
+            instructions=instructions,
+            stream=stream,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
+            metadata=metadata,
+            user=user,
+            store=store,
+            previous_response_id=previous_response_id,
+            truncation=truncation,
+        )
 
     messages: list[dict] = []
     if instructions:

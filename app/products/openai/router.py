@@ -305,10 +305,13 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 messages=messages,
                 stream=is_stream,
                 emit_think=emit_think,
+                reasoning_effort=req.reasoning_effort,
                 tools=req.tools,
                 tool_choice=req.tool_choice,
+                parallel_tool_calls=req.parallel_tool_calls,
                 temperature=req.temperature or 0.8,
                 top_p=req.top_p or 0.95,
+                max_tokens=req.max_tokens,
             )
 
     except AppError:
@@ -414,6 +417,17 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         top_p=req.top_p or 0.95,
         tools=req.tools or None,
         tool_choice=req.tool_choice,
+        parallel_tool_calls=req.parallel_tool_calls,
+        reasoning_effort=(
+            str(req.reasoning.get("effort"))
+            if isinstance(req.reasoning, dict) and req.reasoning.get("effort") is not None
+            else None
+        ),
+        max_output_tokens=req.max_output_tokens,
+        metadata=req.metadata,
+        store=req.store,
+        previous_response_id=req.previous_response_id,
+        truncation=req.truncation,
     )
 
     if isinstance(result, dict):
